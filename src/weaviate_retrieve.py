@@ -6,15 +6,19 @@ from weaviate.classes.init import Auth
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_weaviate.vectorstores import WeaviateVectorStore
 from langchain_groq import ChatGroq
+
 from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
+
+from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+from langchain_classic.retrievers.document_compressors import CrossEncoderReranker
+from langchain_classic.retrievers import ContextualCompressionRetriever
 
 load_dotenv()
 
 
 def main():
-    # 1. Grab credentials
     weaviate_url = os.getenv("WEAVIATE_URL")
     weaviate_api_key = os.getenv("WEAVIATE_API_KEY")
     groq_api_key = os.getenv("GROQ_API_KEY")
@@ -23,14 +27,13 @@ def main():
         print("Error: Missing API keys in .env file.")
         return
 
-    # 2. Initialize Embeddings (GPU Accelerated)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+
     embedding_model = HuggingFaceEmbeddings(
         model_name="all-MiniLM-L6-v2",
         model_kwargs={'device': device}
     )
 
-    # 3. Connect to Weaviate Cloud
     print("Connecting to Weaviate Cloud...")
     weaviate_client = weaviate.connect_to_weaviate_cloud(
         cluster_url=weaviate_url,
@@ -38,7 +41,8 @@ def main():
     )
 
     try:
-        index_name = "Portfolio_RAG_Docs"
+        # --- UPDATED: CONNECT TO NEW INDEX ---
+        index_name = "Portfolio_RAG_Docs_v2"
         vector_store = WeaviateVectorStore(
             client=weaviate_client,
             index_name=index_name,
@@ -46,14 +50,32 @@ def main():
             embedding=embedding_model
         )
 
-        # 4. Initialize Groq LLM
+        # --- UPDATED: NEW LLAMA 3.1 MODEL ---
         print("Initializing Groq LLM...")
         llm = ChatGroq(
             model="llama-3.1-8b-instant",
             temperature=0.0,
         )
 
-        # 5. Set up the Prompt
+        print(f"Loading Cross-Encoder Re-ranker on: {device.upper()}...")
+        cross_encoder = HuggingFaceCrossEncoder(
+            model_name="BAAI/bge-reranker-base",
+            model_kwargs={'device': device}
+        )
+
+        # --- UPDATED: KEEP TOP 5 ---
+        compressor = CrossEncoderReranker(model=cross_encoder, top_n=5)
+
+        # --- UPDATED: FETCH TOP 10 ---
+        base_retriever = vector_store.as_retriever(
+            search_kwargs={"k": 10, "alpha": 0.5}
+        )
+
+        compression_retriever = ContextualCompressionRetriever(
+            base_compressor=compressor,
+            base_retriever=base_retriever
+        )
+
         system_prompt = (
             "You are an AI engineering assistant. "
             "Use the following pieces of retrieved context to answer the question. "
@@ -68,37 +90,29 @@ def main():
             ("human", "{input}"),
         ])
 
-        # 6. Build the HYBRID Retrieval Chain
-        # alpha=0.5 means a 50/50 split between keyword (BM25) and semantic (Vector) search
-        retriever = vector_store.as_retriever(
-            search_kwargs={"k": 3, "alpha": 0.5}
-        )
-
         question_answer_chain = create_stuff_documents_chain(llm, prompt)
-        rag_chain = create_retrieval_chain(retriever, question_answer_chain)
+        rag_chain = create_retrieval_chain(compression_retriever, question_answer_chain)
 
-        print("\n✅ Hybrid RAG System Ready! (Powered by Weaviate & Groq)")
+        print("\n✅ Advanced RAG System Ready! (Llama 3.1 + Top 5 Re-ranking)")
 
         while True:
             query = input("\nEnter your question (or type 'exit' to quit): ")
             if query.lower() in ['exit', 'quit']:
                 break
 
-            print("Thinking...")
+            print("Retrieving, re-ranking, and thinking...")
             response = rag_chain.invoke({"input": query})
 
             print("\n--- Answer ---")
             print(response["answer"])
 
-            print("\n--- Sources Used ---")
+            print("\n--- Sources Used (Top 5 Re-ranked) ---")
             for doc in response["context"]:
-                # Print the source file name (handling the cleaned metadata keys if necessary)
                 source = doc.metadata.get('source', 'Unknown Document')
                 print(f"- {source}")
             print("-" * 50)
 
     finally:
-        # Always close the connection when exiting the script
         weaviate_client.close()
 
 

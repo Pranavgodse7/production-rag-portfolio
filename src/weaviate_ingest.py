@@ -32,6 +32,7 @@ def main():
     loader = DirectoryLoader(DATA_DIR, glob="**/*.pdf", loader_cls=PyPDFLoader)
     documents = loader.load()
 
+    # --- UPDATED: LARGER CHUNK SIZE & OVERLAP ---
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200
@@ -39,17 +40,16 @@ def main():
     chunks = text_splitter.split_documents(documents)
     print(f"Split documents into {len(chunks)} chunks.")
 
-    # --- NEW: METADATA CLEANING STEP ---
+    # 3. Metadata Cleaning Step
     print("Cleaning metadata for Weaviate compatibility...")
     for chunk in chunks:
         cleaned_metadata = {}
         for key, value in chunk.metadata.items():
-            # Replace dots and dashes with underscores to satisfy GraphQL rules
             clean_key = key.replace('.', '_').replace('-', '_')
             cleaned_metadata[clean_key] = value
         chunk.metadata = cleaned_metadata
 
-    # 3. Initialize Embedding Model (GPU Accelerated)
+    # 4. Initialize Embedding Model (GPU Accelerated)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Initializing embedding model on: {device.upper()}")
     embedding_model = HuggingFaceEmbeddings(
@@ -57,7 +57,7 @@ def main():
         model_kwargs={'device': device}
     )
 
-    # 4. Connect to Weaviate Cloud
+    # 5. Connect to Weaviate Cloud
     print("Connecting to Weaviate Cloud...")
     weaviate_client = weaviate.connect_to_weaviate_cloud(
         cluster_url=weaviate_url,
@@ -65,9 +65,10 @@ def main():
     )
 
     try:
-        # 5. Push data to Weaviate
+        # 6. Push data to Weaviate
         print("Uploading chunks and embeddings to Weaviate...")
-        index_name = "Portfolio_RAG_Docs"
+        # --- UPDATED: NEW INDEX NAME ---
+        index_name = "Portfolio_RAG_Docs_v2"
 
         vector_store = WeaviateVectorStore(
             client=weaviate_client,
@@ -76,9 +77,8 @@ def main():
             embedding=embedding_model
         )
 
-        # Add documents to the cloud database
         vector_store.add_documents(chunks)
-        print(f"✅ Successfully ingested {len(chunks)} chunks into Weaviate Cloud (with clean metadata)!")
+        print(f"✅ Successfully ingested {len(chunks)} chunks into Weaviate Cloud (v2)!")
 
     finally:
         weaviate_client.close()

@@ -1,19 +1,34 @@
 import os
+import torch
+from dotenv import load_dotenv
 from langchain_chroma import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
+from langchain_classic.chains import create_retrieval_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_core.prompts import ChatPromptTemplate
 
+load_dotenv()
 CHROMA_PATH = "./chroma_db"
 
 def main():
-    # 1. Check if the database exists
+    if not os.environ.get("GROQ_API_KEY"):
+        print("Error: GROQ_API_KEY not found. Please add it to your .env file.")
+        return
+
     if not os.path.exists(CHROMA_PATH):
         print(f"Error: Database not found at '{CHROMA_PATH}'. Please run ingest.py first.")
         return
 
-    # 2. Initialize the SAME embedding model used for ingestion
-    embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    # --- DEVICE CHECK ADDED HERE ---
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Initializing embedding model on: {device.upper()}")
 
-    # 3. Connect to the existing local Chroma database
+    embedding_model = HuggingFaceEmbeddings(
+        model_name="all-MiniLM-L6-v2",
+        model_kwargs={'device': device}
+    )
+
     print("Connecting to local ChromaDB...")
     vector_store = Chroma(
         persist_directory=CHROMA_PATH,
@@ -21,25 +36,45 @@ def main():
         collection_name="portfolio_rag_phase1"
     )
 
-    # 4. Define your query
-    query = input("\nEnter your search query: ")
+    print("Initializing Groq LLM...")
+    llm = ChatGroq(
+        model="llama-3.1-8b-instant",
+        temperature=0.0,        
+    )
 
-    # 5. Perform the semantic search
-    # k=3 means it will return the top 3 most relevant chunks
-    print("\nSearching...")
-    results = vector_store.similarity_search_with_score(query, k=3)
+    system_prompt = (
+        "You are an assistant for question-answering tasks. "
+        "Use the following pieces of retrieved context to answer the question. "
+        "If you don't know the answer, say that you don't know. "
+        "Keep the answer clear and concise."
+        "\n\n"
+        "Context: {context}"
+    )
 
-    if not results:
-        print("No matching results found.")
-        return
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("human", "{input}"),
+    ])
 
-    # 6. Display the results
-    print("\n--- Top Results ---")
-    for i, (doc, score) in enumerate(results):
-        # A lower score in ChromaDB generally indicates closer distance/higher similarity
-        print(f"\nResult {i+1} (Distance Score: {score:.4f}):")
-        print(f"Source: {doc.metadata.get('source', 'Unknown')}")
-        print(f"Content:\n{doc.page_content}")
+    retriever = vector_store.as_retriever(search_kwargs={"k": 10})
+    question_answer_chain = create_stuff_documents_chain(llm, prompt)
+    rag_chain = create_retrieval_chain(retriever, question_answer_chain)
+
+    print("\n✅ RAG System Ready!")
+    while True:
+        query = input("\nEnter your question (or type 'exit' to quit): ")
+        if query.lower() in ['exit', 'quit']:
+            break
+
+        print("Thinking...")
+        response = rag_chain.invoke({"input": query})
+
+        print("\n--- Answer ---")
+        print(response["answer"])
+        
+        print("\n--- Sources Used ---")
+        for doc in response["context"]:
+            print(f"- {doc.metadata.get('source', 'Unknown Document')}")
         print("-" * 40)
 
 if __name__ == "__main__":

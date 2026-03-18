@@ -5,3 +5,7 @@ sentence-transformers
 chromadb
 python-dotenv
 pypdf
+python-dotenv
+langchain-groq
+torch 
+torchvision --index-url https://download.pytorch.org/whl/cu126

@@ -1,0 +1,15 @@
+fastapi
+uvicorn
+pydantic
+streamlit
+requests
+python-dotenv
+weaviate-client
+langchain
+langchain-community
+langchain-weaviate
+langchain-groq
+langchain-huggingface
+langchain-tavily
+langgraph
+sentence-transformers
